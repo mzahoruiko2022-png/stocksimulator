@@ -1,0 +1,21 @@
+.spark {
+  display: block;
+  flex-shrink: 0;
+}
+
+.spark--sm {
+  opacity: 0.95;
+}
+
+.spark--lg {
+  width: 100% !important;
+  max-width: 100%;
+  height: auto;
+  aspect-ratio: 320 / 120;
+}
+
+.spark--empty {
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px dashed var(--rh-border);
+}

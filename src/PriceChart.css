@@ -1,0 +1,153 @@
+.pc-wrap {
+  display: grid;
+  grid-template-columns: 3.25rem 1fr;
+  grid-template-rows: auto auto;
+  gap: 6px 8px;
+  align-items: stretch;
+}
+
+.pc-y-axis {
+  grid-column: 1;
+  grid-row: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  padding: 4px 4px 0 0;
+  font-size: 0.625rem;
+  font-weight: 500;
+  color: var(--rh-text-tertiary);
+  text-align: right;
+}
+
+.pc-svg-wrap {
+  position: relative;
+  grid-column: 2;
+  grid-row: 1;
+  min-width: 0;
+  cursor: crosshair;
+  /* overflow visible so tooltip is not clipped at chart edges */
+  overflow: visible;
+  z-index: 0;
+}
+
+.pc-svg-inner {
+  border-radius: 8px;
+  overflow: hidden;
+  background: rgba(0, 0, 0, 0.35);
+}
+
+.pc-tooltip {
+  position: absolute;
+  top: 8px;
+  z-index: 3;
+  transform: translateX(-50%);
+  pointer-events: none;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.82);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.45);
+  white-space: nowrap;
+}
+
+.pc-tooltip-price {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--rh-text);
+  letter-spacing: -0.02em;
+}
+
+.pc-tooltip-time {
+  font-size: 0.625rem;
+  font-weight: 500;
+  color: var(--rh-text-tertiary);
+}
+
+.pc-svg {
+  display: block;
+  width: 100%;
+  height: 160px;
+}
+
+.pc-dates {
+  grid-column: 2;
+  grid-row: 2;
+  display: flex;
+  justify-content: space-between;
+  gap: 4px;
+  padding: 4px 2px 0;
+  font-size: 0.625rem;
+  font-weight: 500;
+  color: var(--rh-text-tertiary);
+  flex-wrap: wrap;
+}
+
+.pc-date {
+  flex: 1;
+  min-width: 0;
+  text-align: center;
+}
+
+.pc-date:first-child {
+  text-align: left;
+}
+
+.pc-date:last-child {
+  text-align: right;
+}
+
+.pc-empty {
+  padding: 24px 12px;
+  text-align: center;
+  font-size: 0.875rem;
+  color: var(--rh-text-secondary);
+}
+
+/* Period tabs (used in CompanyDetail) */
+.cd-range-tabs {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 6px;
+  overflow-x: auto;
+  padding: 4px 0 12px;
+  margin: 0 -4px;
+  scrollbar-width: thin;
+  -webkit-overflow-scrolling: touch;
+}
+
+.cd-range-tabs::-webkit-scrollbar {
+  height: 4px;
+}
+
+.cd-range-tab {
+  flex: 0 0 auto;
+  padding: 8px 12px;
+  border-radius: 999px;
+  border: none;
+  background: transparent;
+  color: var(--rh-text-secondary);
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.cd-range-tab:hover {
+  color: var(--rh-text);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.cd-range-tab.cd-range-tab--active {
+  background: var(--rh-green);
+  color: #000;
+}
+
+.cd-range-tab.cd-range-tab--active:hover {
+  filter: brightness(1.05);
+  color: #000;
+}
