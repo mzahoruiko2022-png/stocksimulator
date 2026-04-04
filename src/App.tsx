@@ -316,7 +316,9 @@ export function App() {
       if (map.size === 0) {
         if (!silent) {
           setError(
-            "No prices loaded. Run npm run dev, open http://127.0.0.1:5173, then refresh."
+            import.meta.env.DEV
+              ? "No prices loaded. Run npm run dev, open http://127.0.0.1:5173, then refresh."
+              : "No prices loaded. Check your connection and tap Refresh."
           );
           // Keep prior quotes so total portfolio value doesn’t drop to cash-only on a failed refresh.
           setLastFetch(new Date());
