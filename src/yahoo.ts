@@ -1,4 +1,8 @@
-/** Yahoo chart API — `/yahoo` proxied by Vite. Returns price + sparkline from the same response. */
+/**
+ * Yahoo chart API — `/yahoo/...` is proxied:
+ * - Dev (default): Vite dev server proxies to Yahoo.
+ * - Production: set `VITE_YAHOO_API_BASE` to your backend URL (see `server/yahoo-proxy.mjs`).
+ */
 
 export type QuoteData = {
   price: number;
@@ -30,13 +34,31 @@ type YahooChartResponse = {
   };
 };
 
+/** Yahoo v8/chart returns 404 for some legacy tickers; map to the symbol Yahoo actually serves. */
+const YAHOO_CHART_SYMBOL_ALIASES: Record<string, string> = {
+  MMC: "MRSH",
+};
+
+/** Use when looking up `quotes` by holding symbol — Yahoo may key data under the chart symbol. */
+export function normalizeYahooChartSymbol(symbol: string): string {
+  const u = symbol.toUpperCase();
+  return YAHOO_CHART_SYMBOL_ALIASES[u] ?? u;
+}
+
 /** Build absolute URL for any `/yahoo/...` proxied path (chart, quoteSummary, etc.). */
 export function yahooProxyUrl(pathAfterYahoo: string): string {
   const path = pathAfterYahoo.startsWith("/yahoo/")
     ? pathAfterYahoo
     : `/yahoo/${pathAfterYahoo.replace(/^\//, "")}`;
-  const base = import.meta.env.BASE_URL;
-  const root = base.endsWith("/") ? base.slice(0, -1) : base;
+
+  const apiBase = import.meta.env.VITE_YAHOO_API_BASE;
+  if (typeof apiBase === "string" && apiBase.trim().length > 0) {
+    const base = apiBase.replace(/\/$/, "");
+    return `${base}${path}`;
+  }
+
+  const relBase = import.meta.env.BASE_URL;
+  const root = relBase.endsWith("/") ? relBase.slice(0, -1) : relBase;
   const rel = root ? `${root}${path}` : path;
   if (typeof window !== "undefined" && window.location?.origin) {
     return new URL(rel, window.location.origin).href;
@@ -97,13 +119,47 @@ function parseChart(data: YahooChartResponse, requestedSymbol: string): QuoteDat
 }
 
 async function fetchChartJson(symbol: string, query: string): Promise<YahooChartResponse> {
-  const url = absoluteChartUrl(`${encodeURIComponent(symbol)}?${query}`);
+  const sym = normalizeYahooChartSymbol(symbol);
+  const url = absoluteChartUrl(`${encodeURIComponent(sym)}?${query}`);
   const res = await fetch(url, {
     signal: AbortSignal.timeout(30_000),
     cache: "no-store",
   });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json();
+}
+
+/** Instrument metadata from chart API (works without Yahoo quoteSummary / crumb). */
+export type ChartInstrumentMeta = {
+  symbol: string;
+  shortName?: string;
+  longName?: string;
+  currency?: string;
+  exchangeName?: string;
+  fiftyTwoWeekHigh?: number;
+  fiftyTwoWeekLow?: number;
+};
+
+export async function fetchChartInstrumentMeta(symbol: string): Promise<ChartInstrumentMeta | null> {
+  try {
+    const data = await fetchChartJson(symbol, "interval=1d&range=5d");
+    const err = data.chart?.error;
+    if (err) return null;
+    const result = data.chart?.result?.[0];
+    const m = result?.meta as Record<string, unknown> | undefined;
+    if (!m) return null;
+    return {
+      symbol: String(m.symbol ?? symbol),
+      shortName: typeof m.shortName === "string" ? m.shortName : undefined,
+      longName: typeof m.longName === "string" ? m.longName : undefined,
+      currency: typeof m.currency === "string" ? m.currency : undefined,
+      exchangeName: typeof m.exchangeName === "string" ? m.exchangeName : undefined,
+      fiftyTwoWeekHigh: typeof m.fiftyTwoWeekHigh === "number" ? m.fiftyTwoWeekHigh : undefined,
+      fiftyTwoWeekLow: typeof m.fiftyTwoWeekLow === "number" ? m.fiftyTwoWeekLow : undefined,
+    };
+  } catch {
+    return null;
+  }
 }
 
 /** Periods for the company detail chart (Robinhood-style). */
@@ -207,6 +263,10 @@ export async function fetchQuotes(symbols: string[]): Promise<Map<string, QuoteD
         try {
           const q = await fetchQuoteWithRetry(sym);
           map.set(sym, q);
+          const alt = q.symbol?.trim().toUpperCase();
+          if (alt && alt !== sym.toUpperCase()) {
+            map.set(alt, q);
+          }
         } catch {
           // skip failed tickers
         }

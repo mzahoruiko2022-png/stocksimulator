@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { fetchCompanyAnalysis, type CompanyAnalysis } from "./companyAnalysis";
 import { CHART_RANGES, PriceChart } from "./PriceChart";
 import { TradeQtyStepper } from "./TradeQtyStepper";
+import { CompanyAvatar } from "./CompanyAvatar";
 import { fetchChartSeries, type ChartRange, type ChartSeriesPoint } from "./yahoo";
 import "./CompanyDetail.css";
 
@@ -49,6 +50,7 @@ type Props = {
   setQty: (n: number) => void;
   onBuy: () => void;
   onSell: () => void;
+  tradeError?: string | null;
 };
 
 export function CompanyDetail({
@@ -64,6 +66,7 @@ export function CompanyDetail({
   setQty,
   onBuy,
   onSell,
+  tradeError,
 }: Props) {
   const [data, setData] = useState<CompanyAnalysis | null>(null);
   const [loading, setLoading] = useState(true);
@@ -151,7 +154,7 @@ export function CompanyDetail({
       <div className="cd-body">
         <div className="cd-hero">
           <div className="cd-avatar" aria-hidden>
-            {symbol.slice(0, 2)}
+            <CompanyAvatar symbol={symbol} />
           </div>
           <div className="cd-ticker">{symbol}</div>
           {(sectorLabel || data?.sector) && (
@@ -201,10 +204,22 @@ export function CompanyDetail({
           {!chartLoading && !chartErr && chartSeries.length < 2 && (
             <p className="cd-muted">No chart data for this range.</p>
           )}
-        </section>
 
-        {loading && <p className="cd-muted">Loading company data…</p>}
-        {err && <p className="cd-err">{err}</p>}
+          <div className="cd-quick-summary-block">
+            <div className="cd-chart-label">Overview</div>
+            {loading && <p className="cd-muted">Loading summary…</p>}
+            {!loading && data?.summary && (
+              <p className="cd-quick-summary">{data.summary.replace(/\s+/g, " ").trim()}</p>
+            )}
+            {!loading && data && !data.summary && (data.industry || data.sector) && (
+              <p className="cd-quick-summary">{[data.industry, data.sector].filter(Boolean).join(" · ")}</p>
+            )}
+            {!loading && data && !data.summary && !data.industry && !data.sector && (
+              <p className="cd-quick-summary">{data.longName ?? data.shortName ?? displayName}</p>
+            )}
+            {!loading && err && !data && <p className="cd-muted">Could not load company summary.</p>}
+          </div>
+        </section>
 
         {data && !loading && (
           <>
@@ -305,13 +320,6 @@ export function CompanyDetail({
                 )}
               </dl>
             </section>
-
-            {data.summary && (
-              <section className="cd-about" aria-label="About">
-                <h2 className="cd-h2">About</h2>
-                <p className="cd-summary">{data.summary}</p>
-              </section>
-            )}
           </>
         )}
 
@@ -348,6 +356,11 @@ export function CompanyDetail({
                 Sell
               </button>
             </div>
+            {tradeError ? (
+              <p className="cd-trade-err" role="alert">
+                {tradeError}
+              </p>
+            ) : null}
           </div>
         </section>
 

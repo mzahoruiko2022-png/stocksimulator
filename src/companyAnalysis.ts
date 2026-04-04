@@ -1,4 +1,4 @@
-import { yahooProxyUrl } from "./yahoo";
+import { fetchChartInstrumentMeta } from "./yahoo";
 
 export type CompanyAnalysis = {
   symbol: string;
@@ -27,72 +27,76 @@ export type CompanyAnalysis = {
   enterpriseValue?: number;
 };
 
-function rawNum(v: unknown): number | undefined {
-  if (v == null) return undefined;
-  if (typeof v === "number" && Number.isFinite(v)) return v;
-  if (typeof v === "object" && v !== null && "raw" in v) {
-    const r = (v as { raw?: unknown }).raw;
-    if (typeof r === "number" && Number.isFinite(r)) return r;
-  }
-  return undefined;
+/** Strip parentheticals (e.g. class of stock) for Wikipedia matching. */
+function cleanNameForWiki(name: string): string {
+  return name
+    .replace(/\s*\([^)]*\)\s*/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
-function rawStr(v: unknown): string | undefined {
-  if (v == null) return undefined;
-  if (typeof v === "string") return v;
-  if (typeof v === "object" && v !== null && "fmt" in v) {
-    const f = (v as { fmt?: unknown }).fmt;
-    if (typeof f === "string") return f;
+async function fetchWikipediaSummaryByTitle(titleUnderscored: string): Promise<string | null> {
+  const url = `https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(titleUnderscored)}`;
+  const res = await fetch(url, {
+    signal: AbortSignal.timeout(15_000),
+    cache: "no-store",
+    headers: { Accept: "application/json" },
+  });
+  if (!res.ok) return null;
+  const data = (await res.json()) as { type?: string; extract?: string };
+  if (data.type === "disambiguation" || typeof data.extract !== "string" || !data.extract.trim()) {
+    return null;
   }
-  return undefined;
+  return data.extract.trim();
 }
 
+async function searchWikipediaExtract(query: string): Promise<string | null> {
+  if (query.length < 2) return null;
+  const url = `https://en.wikipedia.org/w/api.php?action=query&list=search&format=json&origin=*&srsearch=${encodeURIComponent(query)}&srlimit=1`;
+  const res = await fetch(url, {
+    signal: AbortSignal.timeout(15_000),
+    cache: "no-store",
+  });
+  if (!res.ok) return null;
+  const data = (await res.json()) as { query?: { search?: Array<{ title: string }> } };
+  const title = data.query?.search?.[0]?.title;
+  if (!title) return null;
+  return fetchWikipediaSummaryByTitle(title.replace(/\s+/g, "_"));
+}
+
+/**
+ * Company profile for the detail sheet.
+ * Yahoo `quoteSummary` requires a crumb cookie and fails from the browser; we use chart meta (same as prices)
+ * plus a short Wikipedia extract for the overview.
+ */
 export async function fetchCompanyAnalysis(symbol: string): Promise<CompanyAnalysis> {
-  const enc = encodeURIComponent(symbol);
-  const modules = encodeURIComponent(
-    "assetProfile,summaryDetail,summaryProfile,financialData,defaultKeyStatistics,price"
-  );
-  const url = yahooProxyUrl(`/yahoo/v10/finance/quoteSummary/${enc}?modules=${modules}`);
-  const res = await fetch(url, { signal: AbortSignal.timeout(30_000), cache: "no-store" });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  const data = (await res.json()) as {
-    quoteSummary?: { result?: unknown[]; error?: { description?: string } };
-  };
-  const err = data.quoteSummary?.error;
-  if (err) throw new Error(err.description ?? "Yahoo error");
-  const r = data.quoteSummary?.result?.[0] as Record<string, Record<string, unknown>> | undefined;
-  if (!r) throw new Error("No company data");
+  const meta = await fetchChartInstrumentMeta(symbol);
+  if (!meta) {
+    throw new Error("No instrument data");
+  }
 
-  const asset = r.assetProfile ?? {};
-  const summary = r.summaryProfile ?? {};
-  const detail = r.summaryDetail ?? {};
-  const fin = r.financialData ?? {};
-  const stats = r.defaultKeyStatistics ?? {};
+  const baseName = cleanNameForWiki(meta.longName ?? meta.shortName ?? symbol);
+  let summary: string | null = null;
+
+  if (baseName.length >= 2) {
+    summary = await fetchWikipediaSummaryByTitle(baseName.replace(/\s+/g, "_"));
+  }
+  if (!summary && baseName.length >= 2) {
+    summary = await searchWikipediaExtract(baseName);
+  }
+  if (!summary && meta.shortName) {
+    const shortClean = cleanNameForWiki(meta.shortName);
+    if (shortClean !== baseName) {
+      summary = await searchWikipediaExtract(shortClean);
+    }
+  }
 
   return {
     symbol,
-    shortName: rawStr(summary.shortName) ?? rawStr(summary.symbol) ?? symbol,
-    longName: rawStr(summary.longName) ?? rawStr(summary.name) ?? rawStr(summary.title),
-    sector: rawStr(asset.sector) ?? rawStr(summary.sector),
-    industry: rawStr(asset.industry) ?? rawStr(summary.industry),
-    summary: typeof asset.longBusinessSummary === "string" ? asset.longBusinessSummary : undefined,
-    website: typeof asset.website === "string" ? asset.website : undefined,
-    employees: rawNum(asset.fullTimeEmployees),
-    city: typeof asset.city === "string" ? asset.city : undefined,
-    state: typeof asset.state === "string" ? asset.state : undefined,
-    country: typeof asset.country === "string" ? asset.country : undefined,
-    marketCap: rawNum(detail.marketCap),
-    trailingPE: rawNum(detail.trailingPE),
-    forwardPE: rawNum(detail.forwardPE),
-    epsTrailing: rawNum(stats.trailingEps),
-    dividendYield: rawNum(detail.dividendYield),
-    fiftyTwoWeekHigh: rawNum(detail.fiftyTwoWeekHigh),
-    fiftyTwoWeekLow: rawNum(detail.fiftyTwoWeekLow),
-    beta: rawNum(stats.beta),
-    profitMargin: rawNum(fin.profitMargins),
-    operatingMargin: rawNum(fin.operatingMargins),
-    revenue: rawNum(fin.totalRevenue),
-    revenuePerShare: rawNum(stats.revenuePerShare),
-    enterpriseValue: rawNum(stats.enterpriseValue),
+    shortName: meta.shortName,
+    longName: meta.longName,
+    summary: summary ?? undefined,
+    fiftyTwoWeekHigh: meta.fiftyTwoWeekHigh,
+    fiftyTwoWeekLow: meta.fiftyTwoWeekLow,
   };
 }

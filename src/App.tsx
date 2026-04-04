@@ -1,13 +1,29 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { companyBySymbol, COMPANIES } from "./companies";
+import { CompanyAvatar } from "./CompanyAvatar";
 import { CompanyDetail } from "./CompanyDetail";
 import { TradeQtyStepper } from "./TradeQtyStepper";
 import { maxBuyShares, maxOrderShares, round4 } from "./tradeQty";
-import { PriceChart } from "./PriceChart";
+import { CHART_RANGES, PriceChart } from "./PriceChart";
 import { Sparkline } from "./Sparkline";
-import { STARTING_CASH, usePortfolio } from "./usePortfolio";
-import { fetchQuotes, type ChartRange, type ChartSeriesPoint, type QuoteData } from "./yahoo";
+import {
+  MIN_STARTING_CASH,
+  STARTING_CASH,
+  usePortfolio,
+} from "./usePortfolio";
+import {
+  fetchQuotes,
+  normalizeYahooChartSymbol,
+  type ChartRange,
+  type ChartSeriesPoint,
+  type QuoteData,
+} from "./yahoo";
 import "./App.css";
+
+function quoteForSymbol(quotes: Map<string, QuoteData>, symbol: string): QuoteData | undefined {
+  const u = symbol.toUpperCase();
+  return quotes.get(u) ?? quotes.get(normalizeYahooChartSymbol(u));
+}
 
 function formatMoney(n: number) {
   return new Intl.NumberFormat("en-US", {
@@ -114,13 +130,46 @@ function portfolioPositive(series: ChartSeriesPoint[]) {
   return series[series.length - 1].close >= series[0].close;
 }
 
-function portfolioChartRange(series: ChartSeriesPoint[]): ChartRange {
-  if (series.length < 2) return "1M";
-  const dt = series[series.length - 1].time - series[0].time;
-  if (dt <= 86400 * 2) return "1D";
-  if (dt <= 86400 * 14) return "1W";
-  if (dt <= 86400 * 120) return "1M";
-  return "ALL";
+const PORTFOLIO_RANGE_LABELS: Record<ChartRange, string> = {
+  "1D": "1D",
+  "1W": "1W",
+  "1M": "1M",
+  "3M": "3M",
+  "1Y": "1Y",
+  "5Y": "5Y",
+  ALL: "All",
+};
+
+const PORTFOLIO_RANGE_SECONDS: Record<Exclude<ChartRange, "ALL">, number> = {
+  "1D": 86400,
+  "1W": 7 * 86400,
+  "1M": 30 * 86400,
+  "3M": 90 * 86400,
+  "1Y": 365 * 86400,
+  "5Y": 5 * 365 * 86400,
+};
+
+/** Slice client-side portfolio history to the selected window (unlike Yahoo charts, data is local). */
+function filterPortfolioSeriesByRange(series: ChartSeriesPoint[], range: ChartRange): ChartSeriesPoint[] {
+  if (series.length < 2) return series;
+  if (range === "ALL") return series;
+
+  const now = Math.floor(Date.now() / 1000);
+  const cutoff = now - PORTFOLIO_RANGE_SECONDS[range];
+
+  const sorted = [...series].sort((a, b) => a.time - b.time);
+  const inWindow = sorted.filter((p) => p.time >= cutoff);
+
+  if (inWindow.length >= 2) return inWindow;
+
+  const beforeCutoff = sorted.filter((p) => p.time < cutoff);
+  const lastBefore = beforeCutoff.length ? beforeCutoff[beforeCutoff.length - 1] : null;
+
+  if (inWindow.length === 1 && lastBefore) {
+    return [lastBefore, ...inWindow];
+  }
+
+  return sorted.slice(-Math.min(Math.max(2, sorted.length), 40));
 }
 
 function FeatherIcon({ className }: { className?: string }) {
@@ -182,7 +231,52 @@ function IconSearchNav({ active }: { active?: boolean }) {
 type Tab = "home" | "browse";
 
 /** Background quote poll — not a WebSocket; Yahoo is polled on this interval while the tab is visible. */
-const TICK_INTERVAL_MS = 10_000;
+const TICK_INTERVAL_MS = 5_000;
+
+function SetupScreen({ onStart }: { onStart: (amount: number) => void }) {
+  const [raw, setRaw] = useState(String(STARTING_CASH));
+
+  const submit = () => {
+    const n = Number(String(raw).replace(/,/g, ""));
+    if (Number.isFinite(n)) onStart(n);
+  };
+
+  return (
+    <div className="rh-setup">
+      <div className="rh-setup-card">
+        <div className="rh-setup-brand">
+          <span className="rh-feather" aria-hidden>
+            <FeatherIcon />
+          </span>
+          <span className="rh-setup-brand-name">Stocks Sim</span>
+        </div>
+        <p className="rh-setup-lead">
+          Paper trading — pick your starting cash, then trade for real tickers.
+        </p>
+        <label className="rh-setup-label" htmlFor="starting-cash">
+          Starting cash
+        </label>
+        <input
+          id="starting-cash"
+          type="number"
+          min={MIN_STARTING_CASH}
+          step={100}
+          value={raw}
+          onChange={(e) => setRaw(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") submit();
+          }}
+          className="rh-setup-input"
+          autoComplete="off"
+        />
+        <p className="rh-setup-hint">Minimum {formatMoney(MIN_STARTING_CASH)}</p>
+        <button type="button" className="rh-setup-btn" onClick={submit}>
+          Start trading
+        </button>
+      </div>
+    </div>
+  );
+}
 
 export function App() {
   const portfolio = usePortfolio();
@@ -196,6 +290,13 @@ export function App() {
   const [search, setSearch] = useState("");
   const [qtyBySymbol, setQtyBySymbol] = useState<Record<string, number>>({});
   const [portfolioHistory, setPortfolioHistory] = useState<ChartSeriesPoint[]>(loadPortfolioSeries);
+  const [portfolioChartRange, setPortfolioChartRange] = useState<ChartRange>("1M");
+  const [resetConfirmOpen, setResetConfirmOpen] = useState(false);
+  const [tradeError, setTradeError] = useState<{ symbol: string; message: string } | null>(null);
+  /** Stocks tab: hide search while scrolling down; show (fixed under header) when scrolling up. */
+  const [browseToolbarVisible, setBrowseToolbarVisible] = useState(true);
+  const [browseScrollY, setBrowseScrollY] = useState(0);
+  const browseScrollLastY = useRef(0);
 
   const symbols = useMemo(() => COMPANIES.map((c) => c.symbol), []);
   const holdingSymbols = useMemo(
@@ -217,11 +318,18 @@ export function App() {
           setError(
             "No prices loaded. Run npm run dev, open http://127.0.0.1:5173, then refresh."
           );
-          setQuotes(map);
+          // Keep prior quotes so total portfolio value doesn’t drop to cash-only on a failed refresh.
           setLastFetch(new Date());
         }
       } else {
-        setQuotes(map);
+        // Merge so a partial fetch (or one failed ticker) does not wipe prior prices — keeps portfolio total accurate.
+        setQuotes((prev) => {
+          const next = new Map(prev);
+          for (const [k, v] of map) {
+            next.set(k, v);
+          }
+          return next;
+        });
         setLastFetch(new Date());
         if (silent) setError(null);
       }
@@ -251,6 +359,43 @@ export function App() {
     setExpandedSymbol(null);
   }, [tab]);
 
+  /** Leaving Stocks: clear search so next visit shows full A–Z list from the top. */
+  useEffect(() => {
+    if (tab !== "home") return;
+    setSearch("");
+  }, [tab]);
+
+  useEffect(() => {
+    if (tab !== "browse") return;
+    window.scrollTo(0, 0);
+    browseScrollLastY.current = 0;
+    setBrowseScrollY(0);
+    setBrowseToolbarVisible(true);
+  }, [tab]);
+
+  useEffect(() => {
+    if (tab !== "browse") return;
+    const onScroll = () => {
+      const y = window.scrollY;
+      setBrowseScrollY(y);
+      const last = browseScrollLastY.current;
+      const delta = y - last;
+      if (y < 12) {
+        setBrowseToolbarVisible(true);
+      } else if (delta > 6) {
+        setBrowseToolbarVisible(false);
+      } else if (delta < -4) {
+        setBrowseToolbarVisible(true);
+      }
+      browseScrollLastY.current = y;
+    };
+    const y0 = window.scrollY;
+    browseScrollLastY.current = y0;
+    setBrowseScrollY(y0);
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => window.removeEventListener("scroll", onScroll);
+  }, [tab]);
+
   useEffect(() => {
     savePortfolioSeries(portfolioHistory);
   }, [portfolioHistory]);
@@ -265,7 +410,7 @@ export function App() {
       let changed = false;
       const next = { ...prev };
       for (const sym of allQtySymbols) {
-        const q = quotes.get(sym);
+        const q = quoteForSymbol(quotes, sym);
         const own = portfolio.holdingFor(sym);
         const mb = q ? maxBuyShares(portfolio.cash, q.price) : 0;
         const mo = maxOrderShares(mb, own);
@@ -281,19 +426,21 @@ export function App() {
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
-    if (!q) return COMPANIES;
-    return COMPANIES.filter(
-      (c) =>
-        c.symbol.toLowerCase().includes(q) ||
-        c.name.toLowerCase().includes(q) ||
-        c.sector.toLowerCase().includes(q)
-    );
+    const list = !q
+      ? COMPANIES
+      : COMPANIES.filter(
+          (c) =>
+            c.symbol.toLowerCase().includes(q) ||
+            c.name.toLowerCase().includes(q) ||
+            c.sector.toLowerCase().includes(q)
+        );
+    return [...list].sort((a, b) => a.symbol.localeCompare(b.symbol));
   }, [search]);
 
   const portfolioValue = useMemo(() => {
     let v = portfolio.cash;
     for (const h of portfolio.holdings) {
-      const q = quotes.get(h.symbol);
+      const q = quoteForSymbol(quotes, h.symbol);
       if (q) v += h.shares * q.price;
     }
     return v;
@@ -301,13 +448,15 @@ export function App() {
 
   /** Track total portfolio value over time (time + close for PriceChart hover). */
   useEffect(() => {
+    if (!portfolio.started) return;
     if (loading && quotes.size === 0) return;
     const rounded = Math.round(portfolioValue * 100) / 100;
     const t = Math.floor(Date.now() / 1000);
+    const baseline = portfolio.startingCash;
     setPortfolioHistory((prev) => {
       if (prev.length === 0) {
         return [
-          { time: t - 60, close: STARTING_CASH },
+          { time: t - 60, close: baseline },
           { time: t, close: rounded },
         ];
       }
@@ -315,54 +464,99 @@ export function App() {
       if (last.close === rounded) return prev;
       return [...prev, { time: t, close: rounded }].slice(-MAX_PORTFOLIO_HISTORY);
     });
-  }, [portfolioValue, loading, quotes.size]);
+  }, [portfolio.started, portfolio.startingCash, portfolioValue, loading, quotes.size]);
 
-  const portfolioRange = useMemo(
-    () => portfolioChartRange(portfolioHistory),
-    [portfolioHistory]
+  const portfolioSeriesForChart = useMemo(
+    () => filterPortfolioSeriesByRange(portfolioHistory, portfolioChartRange),
+    [portfolioHistory, portfolioChartRange]
   );
 
-  const pnl = portfolioValue - STARTING_CASH;
-  const pnlPct = (pnl / STARTING_CASH) * 100;
+  const analysisQuote = useMemo(
+    () => (analysisSymbol ? quoteForSymbol(quotes, analysisSymbol) : undefined),
+    [analysisSymbol, quotes]
+  );
+
+  const base = portfolio.startingCash > 0 ? portfolio.startingCash : 1;
+  const pnl = portfolioValue - portfolio.startingCash;
+  const pnlPct = (pnl / base) * 100;
 
   /** Order size for next trade (+/− only), not your position. */
   const getQty = (sym: string) => qtyBySymbol[sym] ?? 0;
 
   const setQty = (sym: string, n: number) => {
+    setTradeError((e) => (e?.symbol === sym ? null : e));
     setQtyBySymbol((prev) => ({ ...prev, [sym]: round4(n) }));
   };
 
   const buy = (symbol: string) => {
-    const q = quotes.get(symbol);
-    if (!q) return;
+    const q = quoteForSymbol(quotes, symbol);
+    if (!q) {
+      setTradeError({ symbol, message: "Price isn’t loaded yet. Try again in a moment." });
+      return;
+    }
     const maxBuy = maxBuyShares(portfolio.cash, q.price);
     let shares = round4(getQty(symbol));
-    if (shares <= 0) return;
+    if (shares <= 0) {
+      setTradeError({ symbol, message: "Enter a quantity greater than 0." });
+      return;
+    }
+    if (maxBuy <= 0) {
+      setTradeError({ symbol, message: "Not enough cash to buy at this price." });
+      return;
+    }
     shares = Math.min(shares, maxBuy);
-    if (shares <= 0) return;
+    if (shares <= 0) {
+      setTradeError({ symbol, message: "That quantity is more than you can afford." });
+      return;
+    }
     const cost = Math.round(shares * q.price * 100) / 100;
+    if (portfolio.cash + 1e-6 < cost) {
+      setTradeError({ symbol, message: "Insufficient buying power for this order." });
+      return;
+    }
     if (portfolio.buy(symbol, shares, cost)) {
+      setTradeError(null);
       setQty(symbol, 0);
+      void refresh({ silent: true });
+    } else {
+      setTradeError({ symbol, message: "Couldn’t complete purchase. Try fewer shares." });
     }
   };
 
   const sell = (symbol: string) => {
-    const q = quotes.get(symbol);
-    if (!q) return;
+    const q = quoteForSymbol(quotes, symbol);
+    if (!q) {
+      setTradeError({ symbol, message: "Price isn’t loaded yet. Try again in a moment." });
+      return;
+    }
     const have = portfolio.holdingFor(symbol);
     let shares = round4(getQty(symbol));
-    if (shares <= 0) return;
+    if (shares <= 0) {
+      setTradeError({ symbol, message: "Enter a quantity greater than 0." });
+      return;
+    }
+    if (have <= 0) {
+      setTradeError({ symbol, message: "You don’t own any shares to sell." });
+      return;
+    }
     shares = Math.min(shares, have);
-    if (shares <= 0) return;
+    if (shares <= 0) {
+      setTradeError({ symbol, message: "Nothing to sell for that quantity." });
+      return;
+    }
     if (portfolio.sell(symbol, shares, q.price)) {
+      setTradeError(null);
       setQty(symbol, 0);
+      void refresh({ silent: true });
+    } else {
+      setTradeError({ symbol, message: "Couldn’t complete sale. Try again." });
     }
   };
 
   const positions = useMemo(() => {
     return portfolio.holdings
       .map((h) => {
-        const q = quotes.get(h.symbol);
+        const q = quoteForSymbol(quotes, h.symbol);
         const value = q ? h.shares * q.price : 0;
         const dayPct = q ? pctChange(q.price, q.previousClose) : null;
         return { ...h, value, dayPct, price: q?.price, sparkline: q?.sparkline };
@@ -374,6 +568,41 @@ export function App() {
     setExpandedSymbol((prev) => (prev === symbol ? null : symbol));
   };
 
+  const performResetToSetup = useCallback(() => {
+    portfolio.backToSetup();
+    setTab("home");
+    setPortfolioHistory([]);
+    try {
+      localStorage.removeItem(PORTFOLIO_HISTORY_KEY);
+      localStorage.removeItem(LEGACY_PORTFOLIO_HISTORY_KEY);
+    } catch {
+      /* ignore */
+    }
+    setResetConfirmOpen(false);
+  }, [portfolio]);
+
+  useEffect(() => {
+    if (!resetConfirmOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setResetConfirmOpen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [resetConfirmOpen]);
+
+  useEffect(() => {
+    if (!analysisSymbol) return;
+    setTradeError((e) => (e && e.symbol !== analysisSymbol ? null : e));
+  }, [analysisSymbol]);
+
+  if (!portfolio.started) {
+    return (
+      <div className="rh-app rh-app--setup">
+        <SetupScreen onStart={portfolio.startGame} />
+      </div>
+    );
+  }
+
   return (
     <div className="rh-app">
       <header className="rh-topbar">
@@ -382,11 +611,18 @@ export function App() {
             <FeatherIcon />
           </span>
           <div className="rh-brand-text">
-            <span className="rh-brand-name">Stonks</span>
+            <span className="rh-brand-name">Stocks Sim</span>
             <span className="rh-brand-tag">Paper trading</span>
           </div>
         </div>
         <div className="rh-top-actions">
+          <button
+            type="button"
+            className="rh-top-reset"
+            onClick={() => setResetConfirmOpen(true)}
+          >
+            Reset
+          </button>
           <button
             type="button"
             className="rh-icon-btn"
@@ -413,51 +649,8 @@ export function App() {
               {formatMoney(pnl)} ({pnlPct >= 0 ? "+" : ""}
               {pnlPct.toFixed(2)}%)
             </div>
-            <div className="rh-hero-sub">All time · started with {formatMoney(STARTING_CASH)}</div>
+            <div className="rh-hero-sub">All time · started with {formatMoney(portfolio.startingCash)}</div>
           </section>
-
-          <div
-            className={`rh-chart-strip ${pnl < 0 ? "rh-strip-down" : ""}`}
-            aria-label="Portfolio value history"
-          >
-            {portfolioHistory.length >= 2 ? (
-              <PriceChart
-                series={portfolioHistory}
-                range={portfolioRange}
-                positive={portfolioPositive(portfolioHistory)}
-              />
-            ) : (
-              <div className="rh-chart-strip-placeholder">
-                Chart appears after prices load and your total changes.
-              </div>
-            )}
-          </div>
-
-          <div className="rh-bp">
-            <div style={{ flex: 1 }}>
-              <div className="rh-bp-label">Buying power</div>
-              <div className="rh-bp-value tabular">{formatMoney(portfolio.cash)}</div>
-              <div className="rh-bp-row2">
-                <span className="rh-bp-label">Reset portfolio</span>
-                <button
-                  type="button"
-                  className="rh-link-reset"
-                  onClick={() => {
-                    portfolio.reset();
-                    setPortfolioHistory([]);
-                    try {
-                      localStorage.removeItem(PORTFOLIO_HISTORY_KEY);
-                      localStorage.removeItem(LEGACY_PORTFOLIO_HISTORY_KEY);
-                    } catch {
-                      /* ignore */
-                    }
-                  }}
-                >
-                  Reset
-                </button>
-              </div>
-            </div>
-          </div>
 
           <div className="rh-section-title">Your positions</div>
           {positions.length === 0 ? (
@@ -487,7 +680,7 @@ export function App() {
                         }}
                         aria-label={`${p.symbol} — open analysis`}
                       >
-                        {p.symbol.slice(0, 2)}
+                        <CompanyAvatar symbol={p.symbol} />
                       </button>
                       <div className="rh-row-mid">
                         <div className="rh-row-symbol">{p.symbol}</div>
@@ -534,29 +727,94 @@ export function App() {
               })}
             </div>
           )}
+
+          <div
+            className={`rh-chart-strip ${pnl < 0 ? "rh-strip-down" : ""}`}
+            aria-label="Portfolio value history"
+          >
+            {portfolioHistory.length >= 2 ? (
+              <>
+                <div
+                  className="cd-range-tabs rh-portfolio-range-tabs"
+                  role="tablist"
+                  aria-label="Portfolio chart range"
+                >
+                  {CHART_RANGES.map((r) => (
+                    <button
+                      key={r}
+                      type="button"
+                      role="tab"
+                      aria-selected={portfolioChartRange === r}
+                      className={`cd-range-tab ${portfolioChartRange === r ? "cd-range-tab--active" : ""}`}
+                      onClick={() => setPortfolioChartRange(r)}
+                    >
+                      {PORTFOLIO_RANGE_LABELS[r]}
+                    </button>
+                  ))}
+                </div>
+                {portfolioSeriesForChart.length >= 2 ? (
+                  <PriceChart
+                    series={portfolioSeriesForChart}
+                    range={portfolioChartRange}
+                    positive={portfolioPositive(portfolioSeriesForChart)}
+                    variant="portfolio"
+                  />
+                ) : (
+                  <div className="rh-chart-strip-placeholder">
+                    Not enough points in this range yet.
+                  </div>
+                )}
+              </>
+            ) : (
+              <div className="rh-chart-strip-placeholder">
+                Chart appears after prices load and your total changes.
+              </div>
+            )}
+          </div>
+
+          <div className="rh-bp">
+            <div style={{ flex: 1 }}>
+              <div className="rh-bp-label">Buying power</div>
+              <div className="rh-bp-value tabular">{formatMoney(portfolio.cash)}</div>
+            </div>
+          </div>
         </>
       )}
 
       {tab === "browse" && (
         <>
-          <div className="rh-search-wrap">
-            <div className="rh-search-inner">
-              <svg className="rh-search-icon" viewBox="0 0 24 24" fill="none" aria-hidden>
-                <circle cx="11" cy="11" r="6.5" stroke="currentColor" strokeWidth="1.75" />
-                <path d="M16 16l4 4" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" />
-              </svg>
-              <input
-                className="rh-search"
-                type="search"
-                placeholder="Search"
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                aria-label="Search stocks"
-                autoComplete="off"
-              />
+          <div
+            className={`rh-browse-toolbar-fixed ${browseToolbarVisible ? "" : "rh-browse-toolbar-fixed--hidden"}`}
+            aria-hidden={!browseToolbarVisible}
+          >
+            <div className="rh-search-wrap">
+              <div className="rh-search-inner">
+                <svg className="rh-search-icon" viewBox="0 0 24 24" fill="none" aria-hidden>
+                  <circle cx="11" cy="11" r="6.5" stroke="currentColor" strokeWidth="1.75" />
+                  <path d="M16 16l4 4" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" />
+                </svg>
+                <input
+                  className="rh-search"
+                  type="text"
+                  inputMode="search"
+                  enterKeyHint="search"
+                  placeholder="Search"
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  aria-label="Search stocks"
+                  autoComplete="off"
+                  tabIndex={browseToolbarVisible ? 0 : -1}
+                />
+              </div>
             </div>
           </div>
-          {lastFetch && (
+          <div
+            className={`rh-browse-toolbar-spacer ${
+              browseToolbarVisible && browseScrollY < 72 ? "" : "rh-browse-toolbar-spacer--collapsed"
+            }`}
+            aria-hidden
+          />
+          {lastFetch && !browseToolbarVisible && (
             <div className="rh-last-updated">
               Market data · {lastFetch.toLocaleTimeString()}
             </div>
@@ -564,7 +822,7 @@ export function App() {
           <div className="rh-section-title">Browse stocks</div>
           <div className="rh-list">
             {filtered.map((c) => {
-              const q = quotes.get(c.symbol);
+              const q = quoteForSymbol(quotes, c.symbol);
               const own = portfolio.holdingFor(c.symbol);
               const change = q ? pctChange(q.price, q.previousClose) : null;
               const pts = q?.sparkline ?? [];
@@ -586,7 +844,7 @@ export function App() {
                       }}
                       aria-label={`${c.symbol} — open analysis`}
                     >
-                      {c.symbol.slice(0, 2)}
+                      <CompanyAvatar symbol={c.symbol} />
                     </button>
                     <div className="rh-row-mid">
                       <div className="rh-row-symbol">{c.symbol}</div>
@@ -671,6 +929,11 @@ export function App() {
                         Sell
                       </button>
                     </div>
+                    {tradeError?.symbol === c.symbol && (
+                      <p className="rh-trade-err" role="alert">
+                        {tradeError.message}
+                      </p>
+                    )}
                   </div>
                 </div>
               );
@@ -679,28 +942,59 @@ export function App() {
         </>
       )}
 
-      <p className="rh-foot">
-        Quotes delayed. Run <code>npm run dev</code> · not affiliated with Robinhood Markets.
-      </p>
+      <p className="rh-foot">Quotes may be delayed.</p>
+
+      {resetConfirmOpen && (
+        <div
+          className="rh-modal-overlay"
+          role="presentation"
+          onClick={() => setResetConfirmOpen(false)}
+        >
+          <div
+            className="rh-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="rh-reset-title"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h2 id="rh-reset-title" className="rh-modal-title">
+              Reset game?
+            </h2>
+            <p className="rh-modal-warning">
+              This will permanently clear your cash, all stock positions, and your portfolio chart history. You will
+              start over and choose a new starting amount.
+            </p>
+            <p className="rh-modal-question">Are you sure you want to reset?</p>
+            <div className="rh-modal-actions">
+              <button type="button" className="rh-modal-btn rh-modal-btn--no" onClick={() => setResetConfirmOpen(false)}>
+                No
+              </button>
+              <button type="button" className="rh-modal-btn rh-modal-btn--yes" onClick={performResetToSetup}>
+                Yes
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {analysisSymbol && (
         <CompanyDetail
           symbol={analysisSymbol}
-          onClose={() => setAnalysisSymbol(null)}
-          quote={quotes.get(analysisSymbol)}
+          onClose={() => {
+            setAnalysisSymbol(null);
+            setTradeError(null);
+          }}
+          quote={analysisQuote}
           displayName={companyBySymbol(analysisSymbol)?.name ?? analysisSymbol}
           sectorLabel={companyBySymbol(analysisSymbol)?.sector}
           own={portfolio.holdingFor(analysisSymbol)}
-          maxBuy={
-            quotes.get(analysisSymbol)
-              ? maxBuyShares(portfolio.cash, quotes.get(analysisSymbol)!.price)
-              : 0
-          }
+          maxBuy={analysisQuote ? maxBuyShares(portfolio.cash, analysisQuote.price) : 0}
           tradeLoading={loading}
           getQty={() => getQty(analysisSymbol)}
           setQty={(n) => setQty(analysisSymbol, n)}
           onBuy={() => buy(analysisSymbol)}
           onSell={() => sell(analysisSymbol)}
+          tradeError={tradeError?.symbol === analysisSymbol ? tradeError.message : null}
         />
       )}
 

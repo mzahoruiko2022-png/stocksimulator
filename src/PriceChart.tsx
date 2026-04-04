@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import type { ChartRange, ChartSeriesPoint } from "./yahoo";
 import "./PriceChart.css";
 
@@ -23,6 +23,57 @@ function formatPrice(n: number) {
   return n.toFixed(4);
 }
 
+/** Y-axis span for portfolio $ totals: pad so small % moves aren’t a flat line; keep min ≥ 0 when data is. */
+function computeYExtent(
+  closes: number[],
+  variant: "default" | "portfolio"
+): { min: number; max: number; span: number } {
+  if (closes.length < 2) {
+    return { min: 0, max: 1, span: 1 };
+  }
+  const rawMin = Math.min(...closes);
+  const rawMax = Math.max(...closes);
+  if (variant !== "portfolio") {
+    const span = Math.max(rawMax - rawMin, 1e-12);
+    return { min: rawMin, max: rawMax, span };
+  }
+  const span0 = rawMax - rawMin;
+  const mid = (rawMin + rawMax) / 2;
+  const magnitude = Math.max(Math.abs(rawMin), Math.abs(rawMax), Math.abs(mid), 1);
+  const pad = Math.max(span0 * 0.12, magnitude * 0.0001);
+  let vmin = rawMin - pad;
+  let vmax = rawMax + pad;
+  if (vmin < 0 && rawMin >= 0) vmin = Math.max(0, rawMin - pad * 0.85);
+  let span = vmax - vmin;
+  if (span < 1e-9) {
+    const bump = Math.max(magnitude * 1e-8, 1);
+    return { min: rawMin - bump, max: rawMax + bump, span: Math.max(2 * bump, 1e-12) };
+  }
+  return { min: vmin, max: vmax, span };
+}
+
+/** Axis ticks for large dollar ranges — avoids “10,000,000” twice when min/max differ slightly. */
+function formatPortfolioAxis(n: number, span: number): string {
+  const abs = Math.abs(n);
+  if (span >= 1e9 || abs >= 1e9) return `$${(n / 1e9).toFixed(3)}B`;
+  if (span >= 1e6 || abs >= 1e6) return `$${(n / 1e6).toFixed(3)}M`;
+  if (span >= 1e3 || abs >= 1e3) return `$${(n / 1e3).toFixed(2)}K`;
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    maximumFractionDigits: 2,
+  }).format(n);
+}
+
+function formatPortfolioTooltip(n: number): string {
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(n);
+}
+
 function interpolateAt(
   series: ChartSeriesPoint[],
   fracIndex: number
@@ -42,6 +93,8 @@ type Props = {
   series: ChartSeriesPoint[];
   range: ChartRange;
   positive: boolean;
+  /** Portfolio totals: padded Y-axis + clearer $ labels so huge balances still show movement. */
+  variant?: "default" | "portfolio";
 };
 
 const VB_W = 400;
@@ -49,7 +102,7 @@ const VB_H = 160;
 const PAD = 8;
 
 /** Full-width chart with date labels + hover crosshair / value. */
-export function PriceChart({ series, range, positive }: Props) {
+export function PriceChart({ series, range, positive, variant = "default" }: Props) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const [hover, setHover] = useState<{
     xSvg: number;
@@ -58,10 +111,10 @@ export function PriceChart({ series, range, positive }: Props) {
     timeLabel: string;
   } | null>(null);
 
-  const closes = series.map((p) => p.close);
-  const min = Math.min(...closes);
-  const max = Math.max(...closes);
-  const span = max - min || 1;
+  const { min, max, span } = useMemo(() => {
+    const closes = series.map((p) => p.close);
+    return computeYExtent(closes, variant);
+  }, [series, variant]);
 
   const d = series
     .map((p, i) => {
@@ -105,6 +158,11 @@ export function PriceChart({ series, range, positive }: Props) {
     [series, range, min, span]
   );
 
+  const formatYLabel = (v: number) =>
+    variant === "portfolio" ? formatPortfolioAxis(v, span) : formatPrice(v);
+  const formatHoverPrice = (v: number) =>
+    variant === "portfolio" ? formatPortfolioTooltip(v) : formatPrice(v);
+
   const onPointerMove = (e: React.PointerEvent) => {
     updateFromClientX(e.clientX);
   };
@@ -126,8 +184,8 @@ export function PriceChart({ series, range, positive }: Props) {
   return (
     <div className="pc-wrap">
       <div className="pc-y-axis" aria-hidden>
-        <span className="tabular">{formatPrice(max)}</span>
-        <span className="tabular">{formatPrice(min)}</span>
+        <span className="tabular">{formatYLabel(max)}</span>
+        <span className="tabular">{formatYLabel(min)}</span>
       </div>
       <div
         className="pc-svg-wrap"
@@ -184,7 +242,7 @@ export function PriceChart({ series, range, positive }: Props) {
               left: `${(hover.xSvg / VB_W) * 100}%`,
             }}
           >
-            <span className="pc-tooltip-price tabular">{formatPrice(hover.price)}</span>
+            <span className="pc-tooltip-price tabular">{formatHoverPrice(hover.price)}</span>
             <span className="pc-tooltip-time">{hover.timeLabel}</span>
           </div>
         )}

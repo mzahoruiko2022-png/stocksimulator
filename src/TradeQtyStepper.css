@@ -33,6 +33,7 @@
 
 .tqs-out {
   min-width: 3.5rem;
+  max-width: 8rem;
   padding: 8px 10px;
   text-align: center;
   font-size: 1rem;
@@ -41,6 +42,14 @@
   background: var(--rh-bg);
   border: 1px solid var(--rh-border);
   border-radius: 8px;
+  box-sizing: border-box;
+  font-family: inherit;
+  appearance: none;
+}
+
+.tqs-out:focus {
+  outline: 2px solid var(--rh-border);
+  outline-offset: 1px;
 }
 
 .tqs-max {

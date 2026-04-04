@@ -65,9 +65,19 @@ const yahooProxy = {
 export default defineConfig({
   plugins: [yahooProxyPlugin(), react()],
   server: {
+    port: 5173,
+    strictPort: false,
+    /** Listen on all interfaces so localhost / 127.0.0.1 / LAN IP work reliably. */
+    host: true,
+    /** Opens your default browser when `npm run dev` starts (use the URL it prints if this fails). */
+    open: true,
     proxy: yahooProxy,
   },
   preview: {
+    host: true,
+    port: 4173,
+    strictPort: false,
+    open: true,
     proxy: yahooProxy,
   },
 });

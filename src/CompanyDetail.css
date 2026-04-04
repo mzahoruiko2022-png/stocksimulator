@@ -87,6 +87,11 @@
   font-size: 1.25rem;
   font-weight: 700;
   color: var(--rh-text);
+  overflow: hidden;
+}
+
+.cd-avatar .company-avatar-fallback {
+  font-size: 1.25rem;
 }
 
 .cd-ticker {
@@ -145,6 +150,23 @@
   overflow: visible;
   background: rgba(0, 0, 0, 0.35);
   border: 1px solid var(--rh-border);
+}
+
+.cd-quick-summary-block {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--rh-border);
+}
+
+.cd-quick-summary-block .cd-chart-label {
+  margin-bottom: 6px;
+}
+
+.cd-quick-summary {
+  margin: 0;
+  font-size: 0.8125rem;
+  line-height: 1.55;
+  color: var(--rh-text-secondary);
 }
 
 .cd-muted {
@@ -320,6 +342,13 @@
   border-color: var(--rh-text-tertiary);
   color: var(--rh-text-tertiary);
   cursor: not-allowed;
+}
+
+.cd-trade-err {
+  margin: 8px 0 0;
+  font-size: 0.8125rem;
+  line-height: 1.35;
+  color: #ffb399;
 }
 
 .cd-disclaimer {
