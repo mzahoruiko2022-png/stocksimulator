@@ -1,7 +1,8 @@
 /**
- * Yahoo chart API — `/yahoo/...` is proxied:
- * - Dev (default): Vite dev server proxies to Yahoo.
- * - Production: set `VITE_YAHOO_API_BASE` to your backend URL (see `server/yahoo-proxy.mjs`).
+ * Yahoo chart API — always uses same-origin `/api/yahoo/...`:
+ * - Dev: Vite proxies `/api/yahoo` → Yahoo (see vite.config.ts).
+ * - Vercel: `api/yahoo/[...path].js` serverless proxies to Yahoo.
+ * - Optional: `VITE_YAHOO_API_BASE` for a custom backend (see server/yahoo-proxy.mjs).
  */
 
 export type QuoteData = {
@@ -45,29 +46,33 @@ export function normalizeYahooChartSymbol(symbol: string): string {
   return YAHOO_CHART_SYMBOL_ALIASES[u] ?? u;
 }
 
-/** Build absolute URL for any `/yahoo/...` proxied path (chart, quoteSummary, etc.). */
-export function yahooProxyUrl(pathAfterYahoo: string): string {
-  const path = pathAfterYahoo.startsWith("/yahoo/")
-    ? pathAfterYahoo
-    : `/yahoo/${pathAfterYahoo.replace(/^\//, "")}`;
+/**
+ * Yahoo path suffix after the domain, e.g. `v8/finance/chart/AAPL?interval=15m&range=5d`.
+ * Uses `/api/yahoo?p=...` so Vercel runs a single Edge function (reliable vs catch-all / SPA).
+ */
+export function yahooProxyUrl(yahooPathSuffix: string): string {
+  const suffix = yahooPathSuffix.replace(/^\/+/, "");
+  const qs = new URLSearchParams();
+  qs.set("p", suffix);
 
   const apiBase = import.meta.env.VITE_YAHOO_API_BASE;
   if (typeof apiBase === "string" && apiBase.trim().length > 0) {
     const base = apiBase.replace(/\/$/, "");
-    return `${base}${path}`;
+    return `${base}/api/yahoo?${qs.toString()}`;
   }
 
+  const rel = `/api/yahoo?${qs.toString()}`;
   const relBase = import.meta.env.BASE_URL;
   const root = relBase.endsWith("/") ? relBase.slice(0, -1) : relBase;
-  const rel = root ? `${root}${path}` : path;
+  const path = root ? `${root}${rel}` : rel;
   if (typeof window !== "undefined" && window.location?.origin) {
-    return new URL(rel, window.location.origin).href;
+    return new URL(path, window.location.origin).href;
   }
-  return rel;
+  return path;
 }
 
 function absoluteChartUrl(query: string): string {
-  return yahooProxyUrl(`/yahoo/v8/finance/chart/${query}`);
+  return yahooProxyUrl(`v8/finance/chart/${query}`);
 }
 
 function extractCloses(result: YahooResult): number[] {

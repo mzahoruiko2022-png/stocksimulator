@@ -33,9 +33,19 @@ app.use(
   })
 );
 
-app.use("/yahoo", async (req, res) => {
-  const rest = req.originalUrl.replace(/^\/yahoo/, "") || "/";
-  const upstreamUrl = `${UPSTREAM}${rest}`;
+app.get("/api/yahoo", async (req, res) => {
+  const p = req.query.p;
+  if (!p || typeof p !== "string") {
+    res.status(400).json({ chart: { error: { description: "Missing p query param" } } });
+    return;
+  }
+  let upstreamUrl;
+  try {
+    upstreamUrl = new URL(decodeURIComponent(p), `${UPSTREAM}/`).href;
+  } catch {
+    res.status(400).json({ chart: { error: { description: "Bad p" } } });
+    return;
+  }
 
   try {
     const r = await fetch(upstreamUrl, {

@@ -2,17 +2,32 @@ import react from "@vitejs/plugin-react";
 import type { Connect, Plugin } from "vite";
 import { defineConfig } from "vite";
 
-/** Fetch-based proxy — runs early so /yahoo always hits Yahoo (fixes preview + stubborn dev setups). */
+/** Dev/preview: proxy `/api/yahoo?p=...` → Yahoo (same as Vercel Edge handler). */
 function yahooProxyPlugin(): Plugin {
   const attach = (middlewares: Connect.Server) => {
     middlewares.use(async (req, res, next) => {
       const raw = req.url ?? "";
-      if (!raw.startsWith("/yahoo")) {
+      if (!raw.startsWith("/api/yahoo")) {
         next();
         return;
       }
-      const path = raw.slice("/yahoo".length) || "/";
-      const upstream = `https://query1.finance.yahoo.com${path}`;
+      const u = new URL(raw, "http://localhost");
+      const p = u.searchParams.get("p");
+      if (!p) {
+        res.statusCode = 400;
+        res.setHeader("Content-Type", "application/json");
+        res.end(JSON.stringify({ chart: { error: { description: "Missing p" } } }));
+        return;
+      }
+      let upstream;
+      try {
+        upstream = new URL(decodeURIComponent(p), "https://query1.finance.yahoo.com/").href;
+      } catch {
+        res.statusCode = 400;
+        res.setHeader("Content-Type", "application/json");
+        res.end(JSON.stringify({ chart: { error: { description: "Bad p" } } }));
+        return;
+      }
       try {
         const r = await fetch(upstream, {
           headers: {
@@ -47,21 +62,6 @@ function yahooProxyPlugin(): Plugin {
   };
 }
 
-const yahooProxy = {
-  "/yahoo": {
-    target: "https://query1.finance.yahoo.com",
-    changeOrigin: true,
-    secure: true,
-    rewrite: (path: string) => path.replace(/^\/yahoo/, ""),
-    configure: (proxy: import("http-proxy").Server) => {
-      proxy.on("proxyReq", (proxyReq) => {
-        proxyReq.setHeader("Referer", "https://finance.yahoo.com/quote/");
-        proxyReq.setHeader("Origin", "https://finance.yahoo.com");
-      });
-    },
-  },
-} as const;
-
 export default defineConfig({
   plugins: [yahooProxyPlugin(), react()],
   server: {
@@ -71,13 +71,11 @@ export default defineConfig({
     host: true,
     /** Opens your default browser when `npm run dev` starts (use the URL it prints if this fails). */
     open: true,
-    proxy: yahooProxy,
   },
   preview: {
     host: true,
     port: 4173,
     strictPort: false,
     open: true,
-    proxy: yahooProxy,
   },
 });
