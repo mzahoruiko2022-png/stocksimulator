@@ -136,8 +136,13 @@ async function fetchChartJson(symbol: string, query: string): Promise<YahooChart
 
 type V7QuoteResult = {
   symbol?: string;
-  regularMarketPrice?: number;
-  regularMarketPreviousClose?: number;
+  regularMarketPrice?: number | null;
+  regularMarketPreviousClose?: number | null;
+  postMarketPrice?: number | null;
+  preMarketPrice?: number | null;
+  bid?: number | null;
+  ask?: number | null;
+  regularMarketOpen?: number | null;
 };
 
 type V7QuoteResponse = {
@@ -147,32 +152,95 @@ type V7QuoteResponse = {
   };
 };
 
-/**
- * Yahoo v8/chart sometimes returns "symbol may be delisted" for valid tickers (e.g. ANSS, IPG, K)
- * while v7/quote still returns prices — use as fallback for mini quote + sparkline.
- */
-async function fetchV7Quote(symbol: string): Promise<QuoteData | null> {
-  const sym = normalizeYahooChartSymbol(symbol);
-  const url = yahooProxyUrl(`v7/finance/quote?symbols=${encodeURIComponent(sym)}`);
-  const res = await fetch(url, {
-    signal: AbortSignal.timeout(20_000),
-    cache: "no-store",
-  });
-  if (!res.ok) return null;
-  const data = (await res.json()) as V7QuoteResponse;
-  const q = data.quoteResponse?.result?.[0];
-  if (!q) return null;
-  const price = q.regularMarketPrice;
-  const prev = q.regularMarketPreviousClose;
-  if (typeof price !== "number" || Number.isNaN(price)) return null;
-  const previousClose = typeof prev === "number" && !Number.isNaN(prev) ? prev : price;
-  const outSym = (q.symbol ?? sym).trim();
+function numOk(n: unknown): n is number {
+  return typeof n === "number" && Number.isFinite(n);
+}
+
+/** Yahoo often omits regularMarketPrice when market is closed; use post/pre/bid or previous close. */
+function pickPriceV7(q: V7QuoteResult): number | undefined {
+  const candidates = [
+    q.regularMarketPrice,
+    q.postMarketPrice,
+    q.preMarketPrice,
+    q.regularMarketOpen,
+    q.bid,
+    q.ask,
+  ];
+  for (const n of candidates) {
+    if (numOk(n) && n > 0) return n;
+  }
+  if (numOk(q.regularMarketPreviousClose) && q.regularMarketPreviousClose > 0) {
+    return q.regularMarketPreviousClose;
+  }
+  return undefined;
+}
+
+function pickPrevV7(q: V7QuoteResult, price: number): number {
+  if (numOk(q.regularMarketPreviousClose) && q.regularMarketPreviousClose > 0) {
+    return q.regularMarketPreviousClose;
+  }
+  return price;
+}
+
+function v7ResultToQuoteData(r: V7QuoteResult, fallbackSymbol: string): QuoteData | null {
+  const price = pickPriceV7(r);
+  if (price === undefined) return null;
+  const previousClose = pickPrevV7(r, price);
+  const outSym = ((r.symbol ?? "").trim() || fallbackSymbol).trim();
+  if (!outSym) return null;
   return {
     price,
     previousClose,
     symbol: outSym,
     sparkline: [previousClose, price],
   };
+}
+
+/**
+ * Batch v7/quote — one round-trip for many symbols (more reliable than N parallel chart fallbacks on Vercel).
+ */
+async function fetchV7QuotesBatch(symbols: string[]): Promise<Map<string, QuoteData>> {
+  const out = new Map<string, QuoteData>();
+  if (symbols.length === 0) return out;
+  const joined = symbols.map((s) => normalizeYahooChartSymbol(s)).join(",");
+  const url = yahooProxyUrl(`v7/finance/quote?symbols=${joined}`);
+  const res = await fetch(url, {
+    signal: AbortSignal.timeout(25_000),
+    cache: "no-store",
+  });
+  if (!res.ok) return out;
+  const data = (await res.json()) as V7QuoteResponse;
+  const results = data.quoteResponse?.result ?? [];
+  const byUpper = new Map<string, V7QuoteResult>();
+  for (const r of results) {
+    const su = (r.symbol ?? "").toUpperCase();
+    if (su) byUpper.set(su, r);
+  }
+  for (const sym of symbols) {
+    const u = sym.toUpperCase();
+    const n = normalizeYahooChartSymbol(u);
+    const r = byUpper.get(u) ?? byUpper.get(n);
+    if (!r) continue;
+    const qd = v7ResultToQuoteData(r, sym);
+    if (qd) out.set(sym, qd);
+  }
+  return out;
+}
+
+/**
+ * Yahoo v8/chart sometimes returns "symbol may be delisted" for valid tickers (e.g. ANSS, IPG, K)
+ * while v7/quote still returns prices — use as fallback for mini quote + sparkline.
+ */
+async function fetchV7Quote(symbol: string): Promise<QuoteData | null> {
+  const m = await fetchV7QuotesBatch([symbol]);
+  return m.get(symbol) ?? null;
+}
+
+function hasQuoteInMap(map: Map<string, QuoteData>, sym: string): boolean {
+  const u = sym.toUpperCase();
+  if (map.has(u)) return true;
+  const n = normalizeYahooChartSymbol(u);
+  return n !== u && map.has(n);
 }
 
 /** Instrument metadata from chart API (works without Yahoo quoteSummary / crumb). */
@@ -309,7 +377,6 @@ export type FetchQuotesResult = {
 export async function fetchQuotes(symbols: string[]): Promise<FetchQuotesResult> {
   const map = new Map<string, QuoteData>();
   const unique = [...new Set(symbols)];
-  let succeeded = 0;
   /** Parallel chunk size — ~5 rounds for 250 tickers (was 24 → ~11 rounds). */
   const batchSize = 50;
 
@@ -324,12 +391,36 @@ export async function fetchQuotes(symbols: string[]): Promise<FetchQuotesResult>
           if (alt && alt !== sym.toUpperCase()) {
             map.set(alt, q);
           }
-          succeeded += 1;
         } catch {
           // skip failed tickers
         }
       })
     );
   }
+
+  /** Second pass: batched v7 for anything still missing (chart+v7 single-symbol can miss on Yahoo edge cases). */
+  const missing = unique.filter((sym) => !hasQuoteInMap(map, sym));
+  if (missing.length > 0) {
+    const v7Chunk = 45;
+    for (let j = 0; j < missing.length; j += v7Chunk) {
+      const chunk = missing.slice(j, j + v7Chunk);
+      try {
+        const batchMap = await fetchV7QuotesBatch(chunk);
+        for (const sym of chunk) {
+          const q = batchMap.get(sym);
+          if (!q) continue;
+          map.set(sym, q);
+          const alt = q.symbol?.trim().toUpperCase();
+          if (alt && alt !== sym.toUpperCase()) {
+            map.set(alt, q);
+          }
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+
+  const succeeded = unique.filter((sym) => hasQuoteInMap(map, sym)).length;
   return { quotes: map, requested: unique.length, succeeded };
 }

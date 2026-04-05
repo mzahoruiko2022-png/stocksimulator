@@ -64,7 +64,10 @@ export default async function handler(request) {
     const ct = r.headers.get("content-type") ?? "application/json";
     return new Response(body, {
       status: r.status,
-      headers: { "content-type": ct },
+      headers: {
+        "content-type": ct,
+        "cache-control": "no-store, max-age=0",
+      },
     });
   } catch (e) {
     return new Response(
