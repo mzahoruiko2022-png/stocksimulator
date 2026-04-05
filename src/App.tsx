@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { companyBySymbol, COMPANIES } from "./companies";
 import { CompanyAvatar } from "./CompanyAvatar";
 import { CompanyDetail } from "./CompanyDetail";
+import { formatMoney, pctChange } from "./format";
+import { ResetModal } from "./ResetModal";
 import { TradeQtyStepper } from "./TradeQtyStepper";
 import { maxBuyShares, maxOrderShares, round4 } from "./tradeQty";
 import { CHART_RANGES, PriceChart } from "./PriceChart";
@@ -23,20 +25,6 @@ import "./App.css";
 function quoteForSymbol(quotes: Map<string, QuoteData>, symbol: string): QuoteData | undefined {
   const u = symbol.toUpperCase();
   return quotes.get(u) ?? quotes.get(normalizeYahooChartSymbol(u));
-}
-
-function formatMoney(n: number) {
-  return new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: "USD",
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  }).format(n);
-}
-
-function pctChange(price: number, prev: number) {
-  if (prev === 0) return 0;
-  return ((price - prev) / prev) * 100;
 }
 
 function sparkPositive(points: number[]) {
@@ -230,7 +218,7 @@ function IconSearchNav({ active }: { active?: boolean }) {
 
 type Tab = "home" | "browse";
 
-/** Background quote poll — not a WebSocket; Yahoo is polled on this interval while the tab is visible. */
+/** Background quote poll while the tab is visible; silent ticks skip if a fetch is still running. */
 const TICK_INTERVAL_MS = 5_000;
 
 function SetupScreen({ onStart }: { onStart: (amount: number) => void }) {
@@ -293,6 +281,8 @@ export function App() {
   const [portfolioChartRange, setPortfolioChartRange] = useState<ChartRange>("1M");
   const [resetConfirmOpen, setResetConfirmOpen] = useState(false);
   const [tradeError, setTradeError] = useState<{ symbol: string; message: string } | null>(null);
+  /** Last bulk quote fetch counts (for partial-failure messaging). */
+  const [quoteFetchStats, setQuoteFetchStats] = useState<{ requested: number; succeeded: number } | null>(null);
   /** Stocks tab: hide search while scrolling down; show (fixed under header) when scrolling up. */
   const [browseToolbarVisible, setBrowseToolbarVisible] = useState(true);
   const [browseScrollY, setBrowseScrollY] = useState(0);
@@ -305,16 +295,26 @@ export function App() {
     () => [...new Set(portfolio.holdings.map((h) => h.symbol))],
     [portfolio.holdings]
   );
+  const symbolsRef = useRef(symbols);
+  const holdingSymbolsRef = useRef(holdingSymbols);
+  symbolsRef.current = symbols;
+  holdingSymbolsRef.current = holdingSymbols;
+
+  /** Skip overlapping silent polls when a fetch is still in flight (~250 symbols can take several seconds). */
+  const refreshInFlight = useRef(false);
 
   const refresh = useCallback(async (opts?: { silent?: boolean }) => {
     const silent = opts?.silent ?? false;
+    if (refreshInFlight.current && silent) return;
+    refreshInFlight.current = true;
     if (!silent) {
       setLoading(true);
       setError(null);
     }
     try {
-      const need = [...new Set([...symbols, ...holdingSymbols])];
-      const map = await fetchQuotes(need);
+      const need = [...new Set([...symbolsRef.current, ...holdingSymbolsRef.current])];
+      const { quotes: map, requested, succeeded } = await fetchQuotes(need);
+      setQuoteFetchStats({ requested, succeeded });
       if (map.size === 0) {
         if (!silent) {
           setError(
@@ -342,9 +342,10 @@ export function App() {
         setError(e instanceof Error ? e.message : "Failed to load quotes");
       }
     } finally {
+      refreshInFlight.current = false;
       if (!silent) setLoading(false);
     }
-  }, [symbols, holdingSymbols]);
+  }, []);
 
   useEffect(() => {
     if (initialQuotesRefreshDone.current) return;
@@ -428,7 +429,7 @@ export function App() {
       }
       return changed ? next : prev;
     });
-  }, [allQtySymbols, portfolio.cash, portfolio.holdings, quotes]);
+  }, [allQtySymbols, portfolio, quotes]);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -588,15 +589,6 @@ export function App() {
   }, [portfolio]);
 
   useEffect(() => {
-    if (!resetConfirmOpen) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setResetConfirmOpen(false);
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [resetConfirmOpen]);
-
-  useEffect(() => {
     if (!analysisSymbol) return;
     setTradeError((e) => (e && e.symbol !== analysisSymbol ? null : e));
   }, [analysisSymbol]);
@@ -634,7 +626,8 @@ export function App() {
             className="rh-icon-btn"
             onClick={() => void refresh()}
             disabled={loading}
-            aria-label="Refresh prices"
+            aria-busy={loading}
+            aria-label={loading ? "Refreshing prices" : "Refresh prices"}
           >
             <IconRefresh />
           </button>
@@ -642,6 +635,12 @@ export function App() {
       </header>
 
       {error && <div className="rh-error">{error}</div>}
+      {quoteFetchStats && quoteFetchStats.succeeded < quoteFetchStats.requested && (
+        <div className="rh-quote-partial" role="status">
+          Loaded {quoteFetchStats.succeeded} of {quoteFetchStats.requested} prices (some tickers failed). Tap Refresh to
+          retry.
+        </div>
+      )}
 
       {tab === "home" && (
         <>
@@ -671,55 +670,55 @@ export function App() {
                 const open = expandedSymbol === `pos-${p.symbol}`;
                 return (
                   <div key={p.symbol} className="rh-stock-block">
-                    <button
-                      type="button"
-                      className="rh-row rh-row-tap"
-                      onClick={() => toggleExpand(`pos-${p.symbol}`)}
-                      aria-expanded={open}
-                    >
+                    <div className="rh-row">
                       <button
                         type="button"
                         className="rh-avatar rh-avatar-btn"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setAnalysisSymbol(p.symbol);
-                        }}
+                        onClick={() => setAnalysisSymbol(p.symbol)}
                         aria-label={`${p.symbol} — open analysis`}
                       >
                         <CompanyAvatar symbol={p.symbol} />
                       </button>
-                      <div className="rh-row-mid">
-                        <div className="rh-row-symbol">{p.symbol}</div>
-                        <div className="rh-row-name tabular">
-                          {p.shares} shares · {formatMoney(p.value)}
+                      <button
+                        type="button"
+                        className="rh-row-tap rh-row-tap-expand"
+                        onClick={() => toggleExpand(`pos-${p.symbol}`)}
+                        aria-expanded={open}
+                        aria-label={`${p.symbol} row — ${open ? "collapse" : "expand"}`}
+                      >
+                        <div className="rh-row-mid">
+                          <div className="rh-row-symbol">{p.symbol}</div>
+                          <div className="rh-row-name tabular">
+                            {p.shares} shares · {formatMoney(p.value)}
+                          </div>
                         </div>
-                      </div>
-                      {pts.length >= 2 && (
-                        <div className="rh-spark-cell">
-                          <Sparkline points={pts} positive={sparkPositive(pts)} size="sm" />
+                        {pts.length >= 2 && (
+                          <div className="rh-spark-cell">
+                            <Sparkline points={pts} positive={sparkPositive(pts)} size="sm" />
+                          </div>
+                        )}
+                        <div className="rh-row-right">
+                          <div className="rh-row-price tabular">
+                            {p.price != null ? formatMoney(p.price) : "—"}
+                          </div>
+                          <div
+                            className={`rh-row-pct ${
+                              ch == null ? "rh-muted" : ch >= 0 ? "rh-up" : "rh-down"
+                            }`}
+                          >
+                            {ch != null ? (
+                              <>
+                                {ch >= 0 ? "+" : ""}
+                                {ch.toFixed(2)}% today
+                              </>
+                            ) : (
+                              "—"
+                            )}
+                          </div>
                         </div>
-                      )}
-                      <div className="rh-row-right">
-                        <div className="rh-row-price tabular">
-                          {p.price != null ? formatMoney(p.price) : "—"}
-                        </div>
-                        <div
-                          className={`rh-row-pct ${
-                            ch == null ? "rh-muted" : ch >= 0 ? "rh-up" : "rh-down"
-                          }`}
-                        >
-                          {ch != null ? (
-                            <>
-                              {ch >= 0 ? "+" : ""}
-                              {ch.toFixed(2)}% today
-                            </>
-                          ) : (
-                            "—"
-                          )}
-                        </div>
-                      </div>
-                      <span className={`rh-chevron ${open ? "rh-chevron-up" : ""}`} aria-hidden />
-                    </button>
+                        <span className={`rh-chevron ${open ? "rh-chevron-up" : ""}`} aria-hidden />
+                      </button>
+                    </div>
                     {open && pts.length >= 2 && (
                       <div className="rh-expanded">
                         <div className="rh-expanded-label">Price (chart range)</div>
@@ -835,53 +834,53 @@ export function App() {
               const open = expandedSymbol === c.symbol;
               return (
                 <div key={c.symbol} className="rh-stock-block">
-                  <button
-                    type="button"
-                    className="rh-row rh-row-tap"
-                    onClick={() => toggleExpand(c.symbol)}
-                    aria-expanded={open}
-                  >
+                  <div className="rh-row">
                     <button
                       type="button"
                       className="rh-avatar rh-avatar-btn"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setAnalysisSymbol(c.symbol);
-                      }}
+                      onClick={() => setAnalysisSymbol(c.symbol)}
                       aria-label={`${c.symbol} — open analysis`}
                     >
                       <CompanyAvatar symbol={c.symbol} />
                     </button>
-                    <div className="rh-row-mid">
-                      <div className="rh-row-symbol">{c.symbol}</div>
-                      <div className="rh-row-name">{c.name}</div>
-                    </div>
-                    {pts.length >= 2 && (
-                      <div className="rh-spark-cell">
-                        <Sparkline points={pts} positive={sparkPositive(pts)} size="sm" />
+                    <button
+                      type="button"
+                      className="rh-row-tap rh-row-tap-expand"
+                      onClick={() => toggleExpand(c.symbol)}
+                      aria-expanded={open}
+                      aria-label={`${c.symbol} ${c.name} — ${open ? "collapse" : "expand"}`}
+                    >
+                      <div className="rh-row-mid">
+                        <div className="rh-row-symbol">{c.symbol}</div>
+                        <div className="rh-row-name">{c.name}</div>
                       </div>
-                    )}
-                    <div className="rh-row-right">
-                      <div className="rh-row-price tabular">
-                        {q ? formatMoney(q.price) : "—"}
+                      {pts.length >= 2 && (
+                        <div className="rh-spark-cell">
+                          <Sparkline points={pts} positive={sparkPositive(pts)} size="sm" />
+                        </div>
+                      )}
+                      <div className="rh-row-right">
+                        <div className="rh-row-price tabular">
+                          {q ? formatMoney(q.price) : "—"}
+                        </div>
+                        <div
+                          className={`rh-row-pct ${
+                            change == null ? "rh-muted" : change >= 0 ? "rh-up" : "rh-down"
+                          }`}
+                        >
+                          {change != null ? (
+                            <>
+                              {change >= 0 ? "+" : ""}
+                              {change.toFixed(2)}%
+                            </>
+                          ) : (
+                            "—"
+                          )}
+                        </div>
                       </div>
-                      <div
-                        className={`rh-row-pct ${
-                          change == null ? "rh-muted" : change >= 0 ? "rh-up" : "rh-down"
-                        }`}
-                      >
-                        {change != null ? (
-                          <>
-                            {change >= 0 ? "+" : ""}
-                            {change.toFixed(2)}%
-                          </>
-                        ) : (
-                          "—"
-                        )}
-                      </div>
-                    </div>
-                    <span className={`rh-chevron ${open ? "rh-chevron-up" : ""}`} aria-hidden />
-                  </button>
+                      <span className={`rh-chevron ${open ? "rh-chevron-up" : ""}`} aria-hidden />
+                    </button>
+                  </div>
                   {open && (
                     <div className="rh-expanded">
                       {pts.length >= 2 ? (
@@ -950,38 +949,11 @@ export function App() {
 
       <p className="rh-foot">Quotes may be delayed.</p>
 
-      {resetConfirmOpen && (
-        <div
-          className="rh-modal-overlay"
-          role="presentation"
-          onClick={() => setResetConfirmOpen(false)}
-        >
-          <div
-            className="rh-modal"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="rh-reset-title"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <h2 id="rh-reset-title" className="rh-modal-title">
-              Reset game?
-            </h2>
-            <p className="rh-modal-warning">
-              This will permanently clear your cash, all stock positions, and your portfolio chart history. You will
-              start over and choose a new starting amount.
-            </p>
-            <p className="rh-modal-question">Are you sure you want to reset?</p>
-            <div className="rh-modal-actions">
-              <button type="button" className="rh-modal-btn rh-modal-btn--no" onClick={() => setResetConfirmOpen(false)}>
-                No
-              </button>
-              <button type="button" className="rh-modal-btn rh-modal-btn--yes" onClick={performResetToSetup}>
-                Yes
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      <ResetModal
+        open={resetConfirmOpen}
+        onCancel={() => setResetConfirmOpen(false)}
+        onConfirm={performResetToSetup}
+      />
 
       {analysisSymbol && (
         <CompanyDetail

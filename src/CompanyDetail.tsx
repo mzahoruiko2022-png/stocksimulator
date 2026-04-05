@@ -1,30 +1,18 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { fetchCompanyAnalysis, type CompanyAnalysis } from "./companyAnalysis";
 import { CHART_RANGES, PriceChart } from "./PriceChart";
 import { TradeQtyStepper } from "./TradeQtyStepper";
 import { CompanyAvatar } from "./CompanyAvatar";
+import { formatMoney, pctChange } from "./format";
+import { useFocusTrap } from "./useFocusTrap";
 import { fetchChartSeries, type ChartRange, type ChartSeriesPoint } from "./yahoo";
 import "./CompanyDetail.css";
-
-function formatMoney(n: number) {
-  return new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: "USD",
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  }).format(n);
-}
 
 function formatBig(n: number) {
   if (Math.abs(n) >= 1e12) return `${(n / 1e12).toFixed(2)}T`;
   if (Math.abs(n) >= 1e9) return `${(n / 1e9).toFixed(2)}B`;
   if (Math.abs(n) >= 1e6) return `${(n / 1e6).toFixed(2)}M`;
   return n.toLocaleString("en-US", { maximumFractionDigits: 0 });
-}
-
-function pctChange(price: number, prev: number) {
-  if (prev === 0) return 0;
-  return ((price - prev) / prev) * 100;
 }
 
 const RANGE_LABELS: Record<ChartRange, string> = {
@@ -68,6 +56,9 @@ export function CompanyDetail({
   onSell,
   tradeError,
 }: Props) {
+  const sheetRef = useRef<HTMLDivElement>(null);
+  useFocusTrap(true, sheetRef);
+
   const [data, setData] = useState<CompanyAnalysis | null>(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
@@ -132,7 +123,7 @@ export function CompanyDetail({
       : true;
 
   return (
-    <div className="cd-overlay" role="dialog" aria-modal="true" aria-labelledby="cd-title">
+    <div ref={sheetRef} className="cd-overlay" role="dialog" aria-modal="true" aria-labelledby="cd-title">
       <header className="cd-header">
         <button type="button" className="cd-back" onClick={onClose} aria-label="Back">
           <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden>

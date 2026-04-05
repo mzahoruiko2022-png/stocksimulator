@@ -20,8 +20,23 @@ function yahooProxyPlugin(): Plugin {
         return;
       }
       let upstream;
+      let decodedPath: string;
       try {
-        upstream = new URL(decodeURIComponent(p), "https://query1.finance.yahoo.com/").href;
+        decodedPath = decodeURIComponent(p).replace(/^\/+/, "");
+      } catch {
+        res.statusCode = 400;
+        res.setHeader("Content-Type", "application/json");
+        res.end(JSON.stringify({ chart: { error: { description: "Bad p" } } }));
+        return;
+      }
+      if (!decodedPath.startsWith("v8/finance/chart/")) {
+        res.statusCode = 403;
+        res.setHeader("Content-Type", "application/json");
+        res.end(JSON.stringify({ chart: { error: { description: "Path not allowed" } } }));
+        return;
+      }
+      try {
+        upstream = new URL(decodedPath, "https://query1.finance.yahoo.com/").href;
       } catch {
         res.statusCode = 400;
         res.setHeader("Content-Type", "application/json");

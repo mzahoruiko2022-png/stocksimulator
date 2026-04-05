@@ -134,7 +134,7 @@ export function usePortfolio() {
         const proceeds = Math.round(sellShares * pricePerShare * 100) / 100;
         ok = true;
         const next = [...s.holdings];
-        let remainder = Math.round((have - sellShares) * 10000) / 10000;
+        const remainder = Math.round((have - sellShares) * 10000) / 10000;
         if (remainder <= 1e-8) next.splice(i, 1);
         else next[i] = { symbol: sym, shares: remainder };
         return { ...s, cash: s.cash + proceeds, holdings: next };

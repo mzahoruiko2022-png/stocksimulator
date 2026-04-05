@@ -42,9 +42,9 @@ function computeYExtent(
   const magnitude = Math.max(Math.abs(rawMin), Math.abs(rawMax), Math.abs(mid), 1);
   const pad = Math.max(span0 * 0.12, magnitude * 0.0001);
   let vmin = rawMin - pad;
-  let vmax = rawMax + pad;
+  const vmax = rawMax + pad;
   if (vmin < 0 && rawMin >= 0) vmin = Math.max(0, rawMin - pad * 0.85);
-  let span = vmax - vmin;
+  const span = vmax - vmin;
   if (span < 1e-9) {
     const bump = Math.max(magnitude * 1e-8, 1);
     return { min: rawMin - bump, max: rawMax + bump, span: Math.max(2 * bump, 1e-12) };

@@ -39,9 +39,21 @@ app.get("/api/yahoo", async (req, res) => {
     res.status(400).json({ chart: { error: { description: "Missing p query param" } } });
     return;
   }
+  let decodedPath;
+  try {
+    decodedPath = decodeURIComponent(p).replace(/^\/+/, "");
+  } catch {
+    res.status(400).json({ chart: { error: { description: "Bad p" } } });
+    return;
+  }
+  if (!decodedPath.startsWith("v8/finance/chart/")) {
+    res.status(403).json({ chart: { error: { description: "Path not allowed" } } });
+    return;
+  }
+
   let upstreamUrl;
   try {
-    upstreamUrl = new URL(decodeURIComponent(p), `${UPSTREAM}/`).href;
+    upstreamUrl = new URL(decodedPath, `${UPSTREAM}/`).href;
   } catch {
     res.status(400).json({ chart: { error: { description: "Bad p" } } });
     return;

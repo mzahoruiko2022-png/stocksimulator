@@ -16,9 +16,29 @@ export default async function handler(request) {
     );
   }
 
+  let decodedPath;
+  try {
+    decodedPath = decodeURIComponent(p).replace(/^\/+/, "");
+  } catch {
+    return new Response(
+      JSON.stringify({
+        chart: { error: { description: "Bad ?p= path" } },
+      }),
+      { status: 400, headers: { "content-type": "application/json" } }
+    );
+  }
+  if (!decodedPath.startsWith("v8/finance/chart/")) {
+    return new Response(
+      JSON.stringify({
+        chart: { error: { description: "Path not allowed" } },
+      }),
+      { status: 403, headers: { "content-type": "application/json" } }
+    );
+  }
+
   let upstream;
   try {
-    upstream = new URL(decodeURIComponent(p), "https://query1.finance.yahoo.com/").href;
+    upstream = new URL(decodedPath, "https://query1.finance.yahoo.com/").href;
   } catch {
     return new Response(
       JSON.stringify({

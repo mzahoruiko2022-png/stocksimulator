@@ -257,11 +257,18 @@ async function fetchQuoteWithRetry(symbol: string): Promise<QuoteData> {
   throw last;
 }
 
-export async function fetchQuotes(symbols: string[]): Promise<Map<string, QuoteData>> {
+export type FetchQuotesResult = {
+  quotes: Map<string, QuoteData>;
+  requested: number;
+  succeeded: number;
+};
+
+export async function fetchQuotes(symbols: string[]): Promise<FetchQuotesResult> {
   const map = new Map<string, QuoteData>();
   const unique = [...new Set(symbols)];
-  /** Parallel chunk size — larger batches + no artificial delay between chunks (was 4 + 150ms gaps). */
-  const batchSize = 24;
+  let succeeded = 0;
+  /** Parallel chunk size — ~5 rounds for 250 tickers (was 24 → ~11 rounds). */
+  const batchSize = 50;
 
   for (let i = 0; i < unique.length; i += batchSize) {
     const batch = unique.slice(i, i + batchSize);
@@ -274,11 +281,12 @@ export async function fetchQuotes(symbols: string[]): Promise<Map<string, QuoteD
           if (alt && alt !== sym.toUpperCase()) {
             map.set(alt, q);
           }
+          succeeded += 1;
         } catch {
           // skip failed tickers
         }
       })
     );
   }
-  return map;
+  return { quotes: map, requested: unique.length, succeeded };
 }
