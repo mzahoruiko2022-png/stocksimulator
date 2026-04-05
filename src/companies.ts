@@ -1,4 +1,4 @@
-/** Top 250 US large / mid-cap tickers — prices via Yahoo proxy. */
+/** Top US large / mid-cap tickers — prices via Yahoo proxy. */
 export type Company = { symbol: string; name: string; sector: string };
 
 export const COMPANIES: Company[] = [
@@ -112,7 +112,6 @@ export const COMPANIES: Company[] = [
   { symbol: "AMCR", name: "Amcor", sector: "Materials" },
   { symbol: "AME", name: "Ametek", sector: "Industrial" },
   { symbol: "AMP", name: "Ameriprise Financial", sector: "Financials" },
-  { symbol: "ANSS", name: "Ansys", sector: "Technology" },
   { symbol: "AOS", name: "A. O. Smith", sector: "Industrial" },
   { symbol: "APTV", name: "Aptiv", sector: "Consumer" },
   { symbol: "ARE", name: "Alexandria Real Estate", sector: "Real Estate" },
@@ -191,7 +190,6 @@ export const COMPANIES: Company[] = [
   { symbol: "HWM", name: "Howmet Aerospace", sector: "Industrial" },
   { symbol: "IDXX", name: "Idexx Laboratories", sector: "Healthcare" },
   { symbol: "IP", name: "International Paper", sector: "Materials" },
-  { symbol: "IPG", name: "Interpublic Group", sector: "Communication" },
   { symbol: "IQV", name: "IQVIA", sector: "Healthcare" },
   { symbol: "IR", name: "Ingersoll Rand", sector: "Industrial" },
   { symbol: "IRM", name: "Iron Mountain", sector: "Real Estate" },
@@ -201,7 +199,6 @@ export const COMPANIES: Company[] = [
   { symbol: "JBHT", name: "J.B. Hunt", sector: "Industrial" },
   { symbol: "JCI", name: "Johnson Controls", sector: "Industrial" },
   { symbol: "JKHY", name: "Jack Henry & Associates", sector: "Technology" },
-  { symbol: "K", name: "Kellanova", sector: "Consumer" },
   { symbol: "KEY", name: "KeyCorp", sector: "Financials" },
   { symbol: "KHC", name: "Kraft Heinz", sector: "Consumer" },
   { symbol: "KIM", name: "Kimco Realty", sector: "Real Estate" },
