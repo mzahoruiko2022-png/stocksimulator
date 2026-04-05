@@ -224,9 +224,10 @@ export async function fetchChartSeries(
   throw lastErr;
 }
 
-/** Primary: intraday-ish line (jagged). Fallback: daily bars. */
+/** Daily bars first (smaller/faster response); fallback intraday for edge cases. */
 async function fetchQuoteOnce(symbol: string): Promise<QuoteData> {
   const tryQueries = [
+    "interval=1d&range=1mo",
     "interval=15m&range=5d",
     "interval=1d&range=3mo",
   ] as const;
@@ -259,7 +260,8 @@ async function fetchQuoteWithRetry(symbol: string): Promise<QuoteData> {
 export async function fetchQuotes(symbols: string[]): Promise<Map<string, QuoteData>> {
   const map = new Map<string, QuoteData>();
   const unique = [...new Set(symbols)];
-  const batchSize = 4;
+  /** Parallel chunk size — larger batches + no artificial delay between chunks (was 4 + 150ms gaps). */
+  const batchSize = 24;
 
   for (let i = 0; i < unique.length; i += batchSize) {
     const batch = unique.slice(i, i + batchSize);
@@ -277,9 +279,6 @@ export async function fetchQuotes(symbols: string[]): Promise<Map<string, QuoteD
         }
       })
     );
-    if (i + batchSize < unique.length) {
-      await new Promise((r) => setTimeout(r, 150));
-    }
   }
   return map;
 }
