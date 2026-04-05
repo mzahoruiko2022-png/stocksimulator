@@ -134,6 +134,47 @@ async function fetchChartJson(symbol: string, query: string): Promise<YahooChart
   return res.json();
 }
 
+type V7QuoteResult = {
+  symbol?: string;
+  regularMarketPrice?: number;
+  regularMarketPreviousClose?: number;
+};
+
+type V7QuoteResponse = {
+  quoteResponse?: {
+    result?: V7QuoteResult[];
+    error?: { description?: string };
+  };
+};
+
+/**
+ * Yahoo v8/chart sometimes returns "symbol may be delisted" for valid tickers (e.g. ANSS, IPG, K)
+ * while v7/quote still returns prices — use as fallback for mini quote + sparkline.
+ */
+async function fetchV7Quote(symbol: string): Promise<QuoteData | null> {
+  const sym = normalizeYahooChartSymbol(symbol);
+  const url = yahooProxyUrl(`v7/finance/quote?symbols=${encodeURIComponent(sym)}`);
+  const res = await fetch(url, {
+    signal: AbortSignal.timeout(20_000),
+    cache: "no-store",
+  });
+  if (!res.ok) return null;
+  const data = (await res.json()) as V7QuoteResponse;
+  const q = data.quoteResponse?.result?.[0];
+  if (!q) return null;
+  const price = q.regularMarketPrice;
+  const prev = q.regularMarketPreviousClose;
+  if (typeof price !== "number" || Number.isNaN(price)) return null;
+  const previousClose = typeof prev === "number" && !Number.isNaN(prev) ? prev : price;
+  const outSym = (q.symbol ?? sym).trim();
+  return {
+    price,
+    previousClose,
+    symbol: outSym,
+    sparkline: [previousClose, price],
+  };
+}
+
 /** Instrument metadata from chart API (works without Yahoo quoteSummary / crumb). */
 export type ChartInstrumentMeta = {
   symbol: string;
@@ -241,6 +282,8 @@ async function fetchQuoteOnce(symbol: string): Promise<QuoteData> {
       lastErr = e instanceof Error ? e : new Error(String(e));
     }
   }
+  const v7 = await fetchV7Quote(symbol);
+  if (v7) return v7;
   throw lastErr;
 }
 

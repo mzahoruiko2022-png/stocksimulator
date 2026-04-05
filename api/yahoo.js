@@ -1,6 +1,6 @@
 /**
  * Single Vercel function (no [...path] folder) — Yahoo requires browser-like headers.
- * Client calls: /api/yahoo?p=<encodeURIComponent("v8/finance/chart/SYM?interval=...")>
+ * Client calls: /api/yahoo?p=<encodeURIComponent("v8/finance/chart/...")> or v7/finance/quote?...
  */
 export const config = { runtime: "edge" };
 
@@ -27,7 +27,9 @@ export default async function handler(request) {
       { status: 400, headers: { "content-type": "application/json" } }
     );
   }
-  if (!decodedPath.startsWith("v8/finance/chart/")) {
+  const allowed =
+    decodedPath.startsWith("v8/finance/chart/") || decodedPath.startsWith("v7/finance/quote");
+  if (!allowed) {
     return new Response(
       JSON.stringify({
         chart: { error: { description: "Path not allowed" } },

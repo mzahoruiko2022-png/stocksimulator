@@ -29,7 +29,9 @@ function yahooProxyPlugin(): Plugin {
         res.end(JSON.stringify({ chart: { error: { description: "Bad p" } } }));
         return;
       }
-      if (!decodedPath.startsWith("v8/finance/chart/")) {
+      const allowed =
+        decodedPath.startsWith("v8/finance/chart/") || decodedPath.startsWith("v7/finance/quote");
+      if (!allowed) {
         res.statusCode = 403;
         res.setHeader("Content-Type", "application/json");
         res.end(JSON.stringify({ chart: { error: { description: "Path not allowed" } } }));

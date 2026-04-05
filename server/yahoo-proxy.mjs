@@ -46,7 +46,9 @@ app.get("/api/yahoo", async (req, res) => {
     res.status(400).json({ chart: { error: { description: "Bad p" } } });
     return;
   }
-  if (!decodedPath.startsWith("v8/finance/chart/")) {
+  const allowed =
+    decodedPath.startsWith("v8/finance/chart/") || decodedPath.startsWith("v7/finance/quote");
+  if (!allowed) {
     res.status(403).json({ chart: { error: { description: "Path not allowed" } } });
     return;
   }
