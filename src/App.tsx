@@ -297,6 +297,8 @@ export function App() {
   const [browseToolbarVisible, setBrowseToolbarVisible] = useState(true);
   const [browseScrollY, setBrowseScrollY] = useState(0);
   const browseScrollLastY = useRef(0);
+  /** Avoid re-running non-silent refresh when `refresh` identity changes after a trade (holdings update). */
+  const initialQuotesRefreshDone = useRef(false);
 
   const symbols = useMemo(() => COMPANIES.map((c) => c.symbol), []);
   const holdingSymbols = useMemo(
@@ -345,6 +347,8 @@ export function App() {
   }, [symbols, holdingSymbols]);
 
   useEffect(() => {
+    if (initialQuotesRefreshDone.current) return;
+    initialQuotesRefreshDone.current = true;
     void refresh();
   }, [refresh]);
 
